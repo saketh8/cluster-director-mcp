@@ -37,7 +37,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -78,6 +80,15 @@ type SearchLogsRequestXidGce struct {
 
 type SearchLogsResponse struct {
 	Status string `json:"status"`
+}
+
+type ListReservationsRequest struct {
+	ProjectID string `json:"projectId,omitempty" jsonschema:"description=GCP project ID. Use the default if the user doesn't provide it."`
+	Zone      string `json:"zone" jsonschema:"description=GCP zone (e.g., us-central1-a). Reservations are zonal resources."`
+}
+
+type ListReservationsResponse struct {
+	Reservations string `json:"reservations"`
 }
 
 type handlers struct {
@@ -242,6 +253,37 @@ func Install(s *mcp.Server, c *config.Config) {
 		func(ctx context.Context, _ *mcp.CallToolRequest, req SearchLogsRequestXidGkeClusters) (*mcp.CallToolResult, SearchLogsResponse, error) {
 			result, err := h.searchLogsMCP(ctx, &req, WereThereXidFailureMessagesInGkeCluster)
 			return nil, SearchLogsResponse{Status: result}, err
+		},
+	)
+
+	listReservationsTool := mcp.Tool{
+		Name:        "list_reservations",
+		Description: "Show list of compute reservations in a given project and zone",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"projectId": map[string]interface{}{
+					"type":        "string",
+					"description": "GCP project ID. Use the default if the user doesn't provide it.",
+				},
+				"zone": map[string]interface{}{
+					"type":        "string",
+					"description": "GCP zone (e.g., us-central1-a). Reservations are zonal resources.",
+				},
+			},
+			"required": []string{"zone"},
+		},
+	}
+	mcp.AddTool(
+		s,
+		&listReservationsTool,
+		func(ctx context.Context, _ *mcp.CallToolRequest, req ListReservationsRequest) (*mcp.CallToolResult, ListReservationsResponse, error) {
+			result, err := h.listReservationsMCP(ctx, &req)
+			return nil, ListReservationsResponse{Reservations: result}, err
 		},
 	)
 
@@ -819,4 +861,69 @@ func getVersionCheckStatus(projectID string, jobObj *persistence.LongRunningJob)
 	}
 
 	return "Job is running...", true
+}
+
+func (h *handlers) listReservationsMCP(ctx context.Context, req *ListReservationsRequest) (string, error) {
+	projectID := req.ProjectID
+	if projectID == "" {
+		projectID = h.c.GetDefaultProjectID()
+	}
+	if projectID == "" {
+		return "Could not determine GCP project. Please run: gcloud config set project \"your-project-name\" and restart the AI Assistant", nil
+	}
+
+	zone := req.Zone
+	// Zone is required by the InputSchema, but we check for safety
+	if zone == "" {
+		return "Zone is required", nil
+	}
+
+	return listReservationsCore(h, ctx, projectID, zone)
+}
+
+func listReservationsCore(h *handlers, ctx context.Context, projectID string, zone string) (string, error) {
+	// 1. Create the Compute Service
+	service, err := compute.NewService(ctx, option.WithScopes(compute.ComputeScope))
+	if err != nil {
+		return "", fmt.Errorf("failed to create compute service: %v", err)
+	}
+
+	// 2. Call the List API
+	req := service.Reservations.List(projectID, zone)
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Listing reservations for project %s in zone %s:\n", projectID, zone))
+
+	headerLen := sb.Len()
+
+	err = req.Pages(ctx, func(page *compute.ReservationList) error {
+		for _, res := range page.Items {
+			// 3. Append details of each reservation
+			sb.WriteString("------------------------------------------------\n")
+			sb.WriteString(fmt.Sprintf("Name: %s\n", res.Name))
+			sb.WriteString(fmt.Sprintf("Status: %s\n", res.Status))
+			sb.WriteString(fmt.Sprintf("Specific Reservation Required: %v\n", res.SpecificReservationRequired))
+
+			if res.SpecificReservation != nil {
+				// Total reserved slots vs slots currently occupied
+				sb.WriteString(fmt.Sprintf("Total Count: %d\n", res.SpecificReservation.Count))
+				sb.WriteString(fmt.Sprintf("In Use: %d\n", res.SpecificReservation.InUseCount))
+
+				if res.SpecificReservation.InstanceProperties != nil {
+					sb.WriteString(fmt.Sprintf("Machine Type: %s\n", res.SpecificReservation.InstanceProperties.MachineType))
+				}
+			}
+		}
+		return nil // Return nil to continue to the next page
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("error iterating listing reservations: %v", err)
+	}
+
+	if sb.Len() == headerLen {
+		sb.WriteString("No reservations found.\n")
+	}
+
+	return sb.String(), nil
 }
