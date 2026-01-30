@@ -104,6 +104,7 @@ const (
 	WereThereXidFailureMessagesInGkeCluster                       // 3
 	WereThereXidFailureMessagesInGkePod                           // 3
 	WereThereXidFailureMessagesInGceInstance                      // 3
+	WereThereStockoutErrorsInGceInstance                      	  // 4
 )
 
 func Install(s *mcp.Server, c *config.Config) {
@@ -287,6 +288,40 @@ func Install(s *mcp.Server, c *config.Config) {
 		},
 	)
 
+	searchStockoutErrors := mcp.Tool{
+		Name:		"search_stockout_errors_in_gce_instances",
+		Description: "Search GCP GCE Instance logs for Stockout errors",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"StartDate": map[string]interface{}{
+					"type":        "string",
+					"format":      "date",
+					"description": "The start of the time period to filter search results. Optional argument.",
+				},
+				"EndDate": map[string]interface{}{
+					"type":        "string",
+					"format":      "date",
+					"description": "The end of the time period to filter search results. This is an optional argument.",
+				},
+			},
+		},
+	}
+	mcp.AddTool(
+		s,
+		&searchStockoutErrors,
+		func(ctx context.Context, _ *mcp.CallToolRequest, req SearchLogsRequestXidGkeClusters) (*mcp.CallToolResult, SearchLogsResponse, error) {
+			result, err := h.searchLogsMCP(ctx, &req, WereThereStockoutErrorsInGceInstance)
+			if strings.Contains(result, "Stockout errors found") {
+				result = "Stockout errors detected: provisioning likely failed due to zone capacity exhaustion."
+			}
+			return nil, SearchLogsResponse{Status: result}, err
+		},
+	)
 }
 
 // func (h *handlers) searchLogsMCP(ctx context.Context, request *SearchLogsRequest, searchType LogSearchType) (string, error) {
@@ -361,6 +396,17 @@ func (h *handlers) searchLogsMCP(ctx context.Context, request *SearchLogsRequest
 		// Remove later
 		genericCore.WriteToLog("searchLogsMCP.2222.FFFF filter: " + filter)
 		//return "Success", nil
+	} else if searchType == WereThereStockoutErrorsInGceInstance {
+		genericCore.WriteToLog("searchLogsMCP.Stockout filter build")
+		filter = `resource.type="gce_instance" AND (textPayload:"ZONE_RESOURCE_POOL_EXHAUSTED" OR jsonPayload.message:"ZONE_RESOURCE_POOL_EXHAUSTED") `	
+		if startDateValid {
+			filter += fmt.Sprintf(` AND timestamp >= "%s" `, startDate.Format("2006-01-02"))
+		}
+		if endDateValid {
+			filter += fmt.Sprintf(` AND timestamp <= "%s" `, endDate.Format("2006-01-02"))
+		}
+
+		genericCore.WriteToLog("searchLogsMCP.Stockout filter: " + filter)
 	} else if searchType == WereThereXidFailureMessagesInGkePod {
 		genericCore.WriteToLog("searchLogsMCP.2222.GGGG WereThereXidFailureMessagesInGkePod")
 		filter = fmt.Sprintf(`(textPayload:"NVRM: Xid" OR jsonPayload.message:"NVRM: Xid") `)
@@ -463,8 +509,15 @@ func (h *handlers) searchLogsMCP(ctx context.Context, request *SearchLogsRequest
 			genericCore.WriteToLog("searchLogsMCP.DDDD NCCL ERROR messages NOT found")
 			retMesgStr = "NCCL ERROR messages  NOT found"
 		}
+	} else if searchType == WereThereStockoutErrorsInGceInstance {
+		if len(returnResults) > 0 {
+			retMesgStr = "Stockout errors found (ZONE_RESOURCE_POOL_EXHAUSTED detected)."
+			return retMesgStr, nil
+		} else {
+			retMesgStr = "No Stockout errors found."
+			return retMesgStr, nil
+		}
 	}
-
 	return retMesgStr, nil
 }
 
