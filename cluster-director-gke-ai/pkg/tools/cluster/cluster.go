@@ -104,7 +104,7 @@ const (
 	WereThereXidFailureMessagesInGkeCluster                       // 3
 	WereThereXidFailureMessagesInGkePod                           // 3
 	WereThereXidFailureMessagesInGceInstance                      // 3
-	WereThereStockoutErrorsInGceInstance                      	  // 4
+	WereThereStockoutErrorsInGceInstance                          // 4
 )
 
 func Install(s *mcp.Server, c *config.Config) {
@@ -289,7 +289,7 @@ func Install(s *mcp.Server, c *config.Config) {
 	)
 
 	searchStockoutErrors := mcp.Tool{
-		Name:		"search_stockout_errors_in_gce_instances",
+		Name:        "search_stockout_errors_in_gce_instances",
 		Description: "Search GCP GCE Instance logs for Stockout errors",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -398,7 +398,7 @@ func (h *handlers) searchLogsMCP(ctx context.Context, request *SearchLogsRequest
 		//return "Success", nil
 	} else if searchType == WereThereStockoutErrorsInGceInstance {
 		genericCore.WriteToLog("searchLogsMCP.Stockout filter build")
-		filter = `resource.type="gce_instance" AND (textPayload:"ZONE_RESOURCE_POOL_EXHAUSTED" OR jsonPayload.message:"ZONE_RESOURCE_POOL_EXHAUSTED") `	
+		filter = `resource.type="gce_instance" AND (textPayload:"ZONE_RESOURCE_POOL_EXHAUSTED" OR jsonPayload.message:"ZONE_RESOURCE_POOL_EXHAUSTED") `
 		if startDateValid {
 			filter += fmt.Sprintf(` AND timestamp >= "%s" `, startDate.Format("2006-01-02"))
 		}
