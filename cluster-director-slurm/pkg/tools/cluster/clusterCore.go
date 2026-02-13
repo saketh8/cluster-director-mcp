@@ -194,9 +194,12 @@ func getGCloudToken() bool {
 
 func getAllZonesInRegion(region string, projectID string, ctx context.Context, computeService *compute.Service) []string {
 	var zonesList []string
+
+	// Ensure we only get zones for the specific region (e.g., us-central1-a, us-central1-b)
 	filter := fmt.Sprintf("name=%s-*", region)
 
 	req1 := computeService.Zones.List(projectID).Filter(filter)
+
 	if err := req1.Pages(ctx, func(page *compute.ZoneList) error {
 		for _, zone := range page.Items {
 			zonesList = append(zonesList, zone.Name)
@@ -210,48 +213,67 @@ func getAllZonesInRegion(region string, projectID string, ctx context.Context, c
 }
 
 func getAllRegionsAndZonesSupportedByHCS(projectID string) bool {
-    // 1. Hardened Structs for HCS Response
-    type Location struct {
-        LocationId string `json:"locationId"` // The API uses locationId
-        Name       string `json:"name"`
-    }
+	// 1. Define Structs with EXACT JSON tags used by the v1 API
+	type Location struct {
+		Name       string `json:"name"`
+		LocationId string `json:"locationId"` // 'locationId' must have a lowercase 'd'
+	}
 
-    type LocationList struct {
-        Locations []Location `json:"locations"`
-    }
+	type LocationList struct {
+		Locations []Location `json:"locations"`
+	}
 
-    var locationData LocationList
+	var locationData LocationList
 
-    if !getGCloudToken() {
-        return false
-    }
+	// 2. Ensure native auth token is available
+	if !getGCloudToken() {
+		genericCore.WriteToLog("Native token acquisition failed in getAllRegionsAndZonesSupportedByHCS")
+		return false
+	}
 
-    // 2. Use the stable v1 endpoint
-    url := fmt.Sprintf("https://hypercomputecluster.googleapis.com/v1/projects/%s/locations", projectID)
+	// 3. UPDATED URL: Using v1 GA endpoint and the correct 'locations' resource path
+	url := fmt.Sprintf("https://hypercomputecluster.googleapis.com/v1/projects/%s/locations", projectID)
 
-    bodyJson, success := genericCore.QueryURLAndGetResult(authToken, url)
-    if !success {
-        return false
-    }
+	bodyJson, success := genericCore.QueryURLAndGetResult(authToken, url)
+	if !success {
+		genericCore.WriteToLog("Error calling Cluster Director Locations API at: " + url)
+		return false
+	}
 
-    // 3. Debugging: Write the raw response to your log to see what Google is actually sending
-    genericCore.WriteToLog("RAW HCS Locations JSON: " + bodyJson)
+	// Log raw response for debugging purposes
+	genericCore.WriteToLog("RAW HCS Locations JSON: " + bodyJson)
 
-    if err := json.Unmarshal([]byte(bodyJson), &locationData); err != nil {
-        genericCore.WriteToLog(fmt.Sprintf("Unmarshal error: %v", err))
-        return false
-    }
+	// 4. Unmarshal into the struct
+	err := json.Unmarshal([]byte(bodyJson), &locationData)
+	if err != nil {
+		genericCore.WriteToLog(fmt.Sprintf("Error unmarshaling HCS locations JSON: %v", err))
+		return false
+	}
 
-    // 4. Populate Map
-    ctx := context.Background()
-    computeService, _ := compute.NewService(ctx)
+	// Verify discovery
+	if len(locationData.Locations) == 0 {
+		genericCore.WriteToLog("HCS API returned 0 locations. Is the service enabled for project " + projectID + "?")
+		return false
+	}
 
-    for _, loc := range locationData.Locations {
-        // Use the correct key from the struct
-        regions2Zones[loc.LocationId] = getAllZonesInRegion(loc.LocationId, projectID, ctx, computeService)
-    }
+	// 5. Setup Native Compute Client
+	ctx := context.Background()
+	computeService, err := compute.NewService(ctx)
+	if err != nil {
+		genericCore.WriteToLog(fmt.Sprintf("Error initializing Native Compute Service: %v", err))
+		return false
+	}
 
-    return true
+	// 6. Map Regions to Zones
+	for _, loc := range locationData.Locations {
+		// Use LocationId to populate the global mapping
+		if loc.LocationId != "" {
+			regions2Zones[loc.LocationId] = getAllZonesInRegion(loc.LocationId, projectID, ctx, computeService)
+		}
+	}
+
+	genericCore.WriteToLog(fmt.Sprintf("Successfully synchronized %d regions for Cluster Director.", len(locationData.Locations)))
+	return true
 }
 
 // Return zone for a cluster if it is present in the cached data structure
@@ -276,6 +298,9 @@ func getZoneForCluster(projectID string, clusterName string) string {
 func getClustersInAllRegions(projectID string) (string, int) {
 	var listOfClusters string = "["
 	countClusters := 0
+	if len(regions2Zones) == 0 {
+		getAllRegionsAndZonesSupportedByHCS(projectID)
+	}
 	genericCore.WriteToLog(fmt.Sprintf("Getting clusters in all regions for projectId : %s", projectID))
 	for region, _ := range regions2Zones {
 		genericCore.WriteToLog(fmt.Sprintf("Getting clusters in region : %s", region))
@@ -303,7 +328,7 @@ func getClustersInRegionIfExists(region string, projectID string) {
 		return
 	}
 
-	url := "https://hypercomputecluster.googleapis.com/v1alpha/projects/" + projectID + "/locations/" + region + "/clusters"
+	url := "https://hypercomputecluster.googleapis.com/v1/projects/" + projectID + "/locations/" + region + "/clusters"
 	genericCore.WriteToLog(fmt.Sprintf("getClustersInRegionIfExists - Getting clusters in region %s URL : %s", region, url))
 
 	// Clear previous cache for this region to ensure data consistency
@@ -315,13 +340,15 @@ func getClustersInRegionIfExists(region string, projectID string) {
 
 	// 3. Process the response
 	// The check for "storages" ensures the API returned a valid cluster object list
-	if success && strings.Contains(bodyString, "storages") {
+	if success && bodyString != "" {
 		genericCore.WriteToLog("Trying to parse JSON response...")
 		var parsedClusterData ClustersResponse
 		err := json.Unmarshal([]byte(bodyString), &parsedClusterData)
 
 		if err != nil {
 			genericCore.WriteToLog(fmt.Sprintf("Error unmarshalling cluster JSON: %v", err))
+		} else if len(parsedClusterData.Clusters) == 0 {
+			genericCore.WriteToLog(fmt.Sprintf("No clusters found in region %s", region))
 		} else {
 			// Update the global cache pointer
 			MostRecentClusterData[region] = &parsedClusterData
