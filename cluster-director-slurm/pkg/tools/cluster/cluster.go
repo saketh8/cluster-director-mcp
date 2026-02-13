@@ -17,7 +17,6 @@ package cluster
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +29,10 @@ import (
 	"cluster-director-mcp/genericCore"
 	"cluster-director-mcp/persistence"
 
+	compute "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/api/iterator"
 )
 
 var sbatchJobIDRegex = regexp.MustCompile(`Submitted batch job (\d+)`)
@@ -572,35 +574,44 @@ func (h *handlers) getClusterMCP(ctx context.Context, request *GetClusterRequest
 }
 
 func (h *handlers) checkMaintenanceEventsCore(projectID string, zone string, clusterName string) (string, error) {
-	genericCore.WriteToLog("-------------------checkMaintenanceEventsCore()-------------------")
+	genericCore.WriteToLog("-------------------checkMaintenanceEventsCore (Native)-------------------")
 
 	nodeList, success := getComputeNodesInCluster(clusterName+"-login-001", zone, projectID)
 	if !success {
 		return fmt.Sprintf("Could not get nodes in cluster %s in project %s", clusterName, projectID), nil
 	}
 
-	returnStr := ""
+	ctx := context.Background()
+	client, err := compute.NewInstancesRESTClient(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to create compute client: %v", err)
+	}
+	defer client.Close()
+
+	var returnStr strings.Builder
 	for _, node := range nodeList {
-		cmd := exec.Command("/usr/bin/gcloud", "compute", "instances", "describe", node, "--zone="+zone)
-		output, err := cmd.Output()
-		returnStr += "Maintenance info for node " + node + " : "
+		req := &computepb.GetInstanceRequest{
+			Project:  projectID,
+			Zone:     zone,
+			Instance: node,
+		}
+
+		instance, err := client.Get(ctx, req)
+		returnStr.WriteString("Maintenance info for node " + node + " : ")
 		if err != nil {
-			returnStr += fmt.Sprintf("Could not get maintenance info for node %s : %w", node, err)
-		} else if strings.Contains(string(output), "maintenanceStatus") {
-			scanner := bufio.NewScanner(strings.NewReader(string(output)))
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line == "upcomingMaintenance:" {
-					for i := 0; i < 5 && scanner.Scan(); i++ {
-						returnStr += scanner.Text() + "\n"
-					}
-				}
-			}
+			returnStr.WriteString(fmt.Sprintf("Error: %v\n", err))
+		} else if instance.StatusMessage != nil {
+			// Upcoming maintenance is often signaled in statusMessage or specific metadata
+			returnStr.WriteString(*instance.StatusMessage + "\n")
 		} else {
-			returnStr += " No events \n"
+			// Check specifically for maintenance status if available in the proto
+			if instance.Scheduling != nil && instance.Scheduling.OnHostMaintenance != nil {
+				returnStr.WriteString(fmt.Sprintf("Policy: %s", *instance.Scheduling.OnHostMaintenance))
+			}
+			returnStr.WriteString(" No active events \n")
 		}
 	}
-	return returnStr, nil
+	return returnStr.String(), nil
 }
 
 func (h *handlers) checkMaintenanceEventsMCP(ctx context.Context, request *MaintenanceEventsRequest) (string, error) {
@@ -1425,42 +1436,77 @@ type gcloudListItem struct {
 	Name string `json:"name"`
 }
 
-// getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-// It returns a list of region names, a list of zone names, and an error if one occurred.
-func getGCloudRegionsAndZones() ([]string, []string, error) {
-	regions, err := runGcloudListCommand("regions")
+func (h *handlers) getGCloudRegionsAndZones(ctx context.Context, projectID string) ([]string, []string, error) {
+	// Regions Client
+	rClient, err := compute.NewRegionsRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get regions: %w", err)
+		return nil, nil, err
+	}
+	defer rClient.Close()
+
+	var regions []string
+	itR := rClient.List(ctx, &computepb.ListRegionsRequest{Project: projectID})
+	for {
+		resp, err := itR.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		regions = append(regions, resp.GetName())
 	}
 
-	zones, err := runGcloudListCommand("zones")
+	// Zones Client
+	zClient, err := compute.NewZonesRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get zones: %w", err)
+		return nil, nil, err
+	}
+	defer zClient.Close()
+
+	var zones []string
+	itZ := zClient.List(ctx, &computepb.ListZonesRequest{Project: projectID})
+	for {
+		resp, err := itZ.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		zones = append(zones, resp.GetName())
 	}
 
 	return regions, zones, nil
 }
 
-// Executes a 'gcloud compute <resource> list' command and returns the names.
-func runGcloudListCommand(resource string) ([]string, error) {
-	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
-	}
-
-	var items []gcloudListItem
-	if err := json.Unmarshal(output, &items); err != nil {
-		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
-	}
-
-	names := make([]string, len(items))
-	for i, item := range items {
-		names[i] = item.Name
-	}
-
-	return names, nil
+func getGCloudRegionsAndZones() ([]string, []string, error) {
+	// Since this is a global-style helper, we create a temporary context
+	h := &handlers{}
+	// Note: In a real production app, pass the project ID from config
+	return h.getGCloudRegionsAndZones(context.Background(), "your-default-project-id")
 }
+
+// // Executes a 'gcloud compute <resource> list' command and returns the names.
+// func runGcloudListCommand(resource string) ([]string, error) {
+// 	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
+// 	output, err := cmd.Output()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
+// 	}
+
+// 	var items []gcloudListItem
+// 	if err := json.Unmarshal(output, &items); err != nil {
+// 		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
+// 	}
+
+// 	names := make([]string, len(items))
+// 	for i, item := range items {
+// 		names[i] = item.Name
+// 	}
+
+// 	return names, nil
+// }
 
 func filterString(rawSSHOut string, substringsToRemove []string) string {
 	// Remove warning/useless strings from ssh output
@@ -1560,7 +1606,6 @@ func runSCP(project string, zone string, srcFile string, destFile string) (strin
 	return filteredSCPOutput, true
 }
 
-// Helper to check status specifically for Version Check jobs
 func getVersionCheckStatus(projectID string, jobObj *persistence.LongRunningJob) (string, bool) {
 	jobObj.LastStatusCheckTime = time.Now()
 

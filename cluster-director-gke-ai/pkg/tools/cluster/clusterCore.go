@@ -17,10 +17,9 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 
 	"cluster-director-mcp/genericCore"
+	"golang.org/x/oauth2/google"
 	//	compute "google.golang.org/api/compute/v0.alpha"
 	"google.golang.org/api/compute/v1"
 )
@@ -159,41 +158,45 @@ func getGCloudToken() bool {
 		return true
 	}
 
-	genericCore.WriteToLog("Executing 'gcloud auth print-access-token' to get bearer token...")
+	genericCore.WriteToLog("Retrieving native Google OAuth2 token for GKE-AI...")
 
-	// Prepare the command
-	cmd := exec.Command("gcloud", "auth", "print-access-token")
+	ctx := context.Background()
+	// Scopes required for Compute and Cloud Platform management
+	scopes := []string{
+		"https://www.googleapis.com/auth/cloud-platform",
+		"https://www.googleapis.com/auth/compute",
+	}
 
-	// Run the command and capture its output
-	output, err := cmd.Output()
+	// FindDefaultCredentials natively looks for credentials in the environment
+	creds, err := google.FindDefaultCredentials(ctx, scopes...)
 	if err != nil {
-		// If 'gcloud' is not installed or not in the PATH, this will fail.
-		// It can also fail if the user is not authenticated.
-		genericCore.WriteToLog(fmt.Sprintf("Error running gcloud command: %v", err))
+		genericCore.WriteToLog(fmt.Sprintf("Error finding default credentials: %v", err))
 		return false
 	}
 
-	// The output is a byte slice, so we convert it to a string and
-	// trim any trailing newline or whitespace.
-	authToken = strings.TrimSpace(string(output))
-	genericCore.WriteToLog("Successfully retrieved access token.")
+	// Fetch the actual access token
+	token, err := creds.TokenSource.Token()
+	if err != nil {
+		genericCore.WriteToLog(fmt.Sprintf("Error retrieving token from source: %v", err))
+		return false
+	}
+
+	authToken = token.AccessToken
+	genericCore.WriteToLog("Successfully retrieved native access token.")
 	return true
 }
 
 func getAllZonesInRegion(region string, projectID string, ctx context.Context, computeService *compute.Service) []string {
 	var zonesList []string
 
-	// The filter string tells the API to return only zones whose region name
-	// matches the one we specified.
+	// Filter for zones within the specified region
 	filter := fmt.Sprintf("name=%s-*", region)
 
-	// Call the Zones.List method with the project ID and the filter.
 	req1 := computeService.Zones.List(projectID).Filter(filter)
 
-	// The 'Do' method handles pagination for you. We process each page of results.
 	if err := req1.Pages(ctx, func(page *compute.ZoneList) error {
 		for _, zone := range page.Items {
-			genericCore.WriteToLog(zone.Name)
+			genericCore.WriteToLog(fmt.Sprintf("Found zone: %s", zone.Name))
 			zonesList = append(zonesList, zone.Name)
 		}
 		return nil

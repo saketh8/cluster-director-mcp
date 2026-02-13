@@ -29,6 +29,10 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	compute "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"google.golang.org/api/iterator"
 )
 
 const maxLogFiles = 100
@@ -353,17 +357,64 @@ func RunGcloudListCommand(resource string) ([]string, error) {
 	return names, nil
 }
 
-// GetGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-func GetGCloudRegionsAndZones() ([]string, []string, error) {
-	regions, err := RunGcloudListCommand("regions")
+func GetGCloudRegionsAndZones(ctx context.Context, projectID string) ([]string, []string, error) {
+	// 1. Initialize Regions Client
+	rClient, err := compute.NewRegionsRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get regions: %w", err)
+		return nil, nil, fmt.Errorf("failed to create regions client: %w", err)
+	}
+	defer rClient.Close()
+
+	var regions []string
+	itR := rClient.List(ctx, &computepb.ListRegionsRequest{
+		Project: projectID,
+	})
+	for {
+		resp, err := itR.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("error iterating regions: %w", err)
+		}
+		regions = append(regions, resp.GetName())
 	}
 
-	zones, err := RunGcloudListCommand("zones")
+	// 2. Initialize Zones Client
+	zClient, err := compute.NewZonesRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get zones: %w", err)
+		return nil, nil, fmt.Errorf("failed to create zones client: %w", err)
+	}
+	defer zClient.Close()
+
+	var zones []string
+	itZ := zClient.List(ctx, &computepb.ListZonesRequest{
+		Project: projectID,
+	})
+	for {
+		resp, err := itZ.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("error iterating zones: %w", err)
+		}
+		zones = append(zones, resp.GetName())
 	}
 
+	WriteToLog(fmt.Sprintf("Successfully retrieved %d regions and %d zones natively", len(regions), len(zones)))
 	return regions, zones, nil
+}
+
+func FetchResourceNamesNative(ctx context.Context, projectID string, resourceType string) ([]string, error) {
+	switch resourceType {
+	case "regions":
+		r, _, err := GetGCloudRegionsAndZones(ctx, projectID)
+		return r, err
+	case "zones":
+		_, z, err := GetGCloudRegionsAndZones(ctx, projectID)
+		return z, err
+	default:
+		return nil, fmt.Errorf("resource type %s not yet implemented natively in genericCore", resourceType)
+	}
 }

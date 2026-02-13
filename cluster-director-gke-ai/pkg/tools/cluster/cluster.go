@@ -17,7 +17,6 @@ package cluster
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +34,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	compute "cloud.google.com/go/compute/apiv1"
+	computepb "cloud.google.com/go/compute/apiv1/computepb"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/api/iterator"
@@ -657,42 +658,62 @@ type gcloudListItem struct {
 	Name string `json:"name"`
 }
 
-// getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-// It returns a list of region names, a list of zone names, and an error if one occurred.
-func getGCloudRegionsAndZones() ([]string, []string, error) {
-	regions, err := runGcloudListCommand("regions")
+func getGCloudRegionsAndZones(ctx context.Context, projectID string) ([]string, []string, error) {
+	// 1. Initialize Regions Client
+	rClient, err := compute.NewRegionsRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Could not get regions: %w", err)
+		return nil, nil, fmt.Errorf("failed to create regions client: %w", err)
+	}
+	defer rClient.Close()
+
+	var regions []string
+	itR := rClient.List(ctx, &computepb.ListRegionsRequest{Project: projectID})
+	for {
+		resp, err := itR.Next()
+		if err == iterator.Done { break }
+		if err != nil { return nil, nil, err }
+		regions = append(regions, resp.GetName())
 	}
 
-	zones, err := runGcloudListCommand("zones")
+	// 2. Initialize Zones Client
+	zClient, err := compute.NewZonesRESTClient(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Could not get zones : %w", err)
+		return nil, nil, fmt.Errorf("failed to create zones client: %w", err)
+	}
+	defer zClient.Close()
+
+	var zones []string
+	itZ := zClient.List(ctx, &computepb.ListZonesRequest{Project: projectID})
+	for {
+		resp, err := itZ.Next()
+		if err == iterator.Done { break }
+		if err != nil { return nil, nil, err }
+		zones = append(zones, resp.GetName())
 	}
 
 	return regions, zones, nil
 }
 
-// Executes a 'gcloud compute <resource> list' command and returns the names.
-func runGcloudListCommand(resource string) ([]string, error) {
-	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
-	}
+// // Executes a 'gcloud compute <resource> list' command and returns the names.
+// func runGcloudListCommand(resource string) ([]string, error) {
+// 	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
+// 	output, err := cmd.Output()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
+// 	}
 
-	var items []gcloudListItem
-	if err := json.Unmarshal(output, &items); err != nil {
-		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
-	}
+// 	var items []gcloudListItem
+// 	if err := json.Unmarshal(output, &items); err != nil {
+// 		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
+// 	}
 
-	names := make([]string, len(items))
-	for i, item := range items {
-		names[i] = item.Name
-	}
+// 	names := make([]string, len(items))
+// 	for i, item := range items {
+// 		names[i] = item.Name
+// 	}
 
-	return names, nil
-}
+// 	return names, nil
+// }
 
 func filterString(rawSSHOut string, substringsToRemove []string) string {
 	// Remove warning/useless strings from ssh output

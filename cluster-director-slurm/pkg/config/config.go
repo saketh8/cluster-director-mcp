@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//      http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,11 +15,11 @@
 package config
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 
 	"cluster-director-mcp/genericCore"
+	"golang.org/x/oauth2/google"
 )
 
 type Config struct {
@@ -65,12 +65,25 @@ func New(version string) *Config {
 }
 
 func getDefaultProjectID() string {
-	out, err := exec.Command("gcloud", "config", "get", "core/project").Output()
+	ctx := context.Background()
+
+	// FindDefaultCredentials automatically checks:
+	// 1. GOOGLE_APPLICATION_CREDENTIALS environment variable.
+	// 2. gcloud auth application-default login (locally).
+	// 3. Metadata server (on GCE/Cloud Run/etc).
+	credentials, err := google.FindDefaultCredentials(ctx)
 	if err != nil {
-		genericCore.WriteToLog(fmt.Sprintf("Failed to get default project: %v", err))
+		genericCore.WriteToLog(fmt.Sprintf("Failed to find default credentials: %v", err))
 		return ""
 	}
-	projectID := strings.TrimSpace(string(out))
-	genericCore.WriteToLog(fmt.Sprintf("Using default project ID: %s", projectID))
+
+	// ProjectID is populated by the SDK if it's discoverable from the credentials.
+	projectID := credentials.ProjectID
+	if projectID == "" {
+		genericCore.WriteToLog("Default project ID not found in environment credentials.")
+		return ""
+	}
+
+	genericCore.WriteToLog(fmt.Sprintf("Using natively detected default project ID: %s", projectID))
 	return projectID
 }
