@@ -138,7 +138,7 @@ func Install(s *mcp.Server, c *config.Config) {
 	}
 
 	// sets authToken
-	getGCloudToken()
+	genericCore.GetGCloudToken()
 
 	// HCS does NOT support ALL regions and has an API to return the list of
 	// regions it supports. Use HCS' API instead of GCE API to get ALL regions
@@ -1421,27 +1421,6 @@ func (h *handlers) listPartitionInfoMCP(ctx context.Context, request *ListPartit
 
 	return h.listPartitionInfoCore(projectID, zone, clusterName)
 
-}
-
-// gcloudListItem represents a single item from the gcloud list command's JSON output.
-type gcloudListItem struct {
-	Name string `json:"name"`
-}
-
-// getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-// It returns a list of region names, a list of zone names, and an error if one occurred.
-func getGCloudRegionsAndZones() ([]string, []string, error) {
-	regions, err := runGcloudListCommand("regions")
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get regions: %w", err)
-	}
-
-	zones, err := runGcloudListCommand("zones")
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get zones: %w", err)
-	}
-
-	return regions, zones, nil
 }
 
 func runGcloudListCommand(resource string) ([]string, error) {

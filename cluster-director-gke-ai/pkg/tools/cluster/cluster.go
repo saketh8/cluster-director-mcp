@@ -101,7 +101,9 @@ func Install(s *mcp.Server, c *config.Config) {
 	}
 
 	// sets authToken
-	getGCloudToken()
+	genericCore.GetGCloudToken()
+
+	go genericCore.GetGCloudRegionsAndZones(context.Background(), c.GetDefaultProjectID())
 
 	// A place where we keep temporary files
 	createScratchDir()
@@ -652,26 +654,26 @@ func slurpFile(fileName string) (string, error) {
 	return string(content), err
 }
 
-// gcloudListItem represents a single item from the gcloud list command's JSON output.
-type gcloudListItem struct {
-	Name string `json:"name"`
-}
+// // gcloudListItem represents a single item from the gcloud list command's JSON output.
+// type gcloudListItem struct {
+// 	Name string `json:"name"`
+// }
 
-// getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-// It returns a list of region names, a list of zone names, and an error if one occurred.
-func getGCloudRegionsAndZones() ([]string, []string, error) {
-	regions, err := runGcloudListCommand("regions")
-	if err != nil {
-		return nil, nil, fmt.Errorf("Could not get regions: %w", err)
-	}
+// // getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
+// // It returns a list of region names, a list of zone names, and an error if one occurred.
+// func getGCloudRegionsAndZones() ([]string, []string, error) {
+// 	regions, err := runGcloudListCommand("regions")
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("Could not get regions: %w", err)
+// 	}
 
-	zones, err := runGcloudListCommand("zones")
-	if err != nil {
-		return nil, nil, fmt.Errorf("Could not get zones : %w", err)
-	}
+// 	zones, err := runGcloudListCommand("zones")
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("Could not get zones : %w", err)
+// 	}
 
-	return regions, zones, nil
-}
+// 	return regions, zones, nil
+// }
 
 // Executes a 'gcloud compute <resource> list' command and returns the names.
 func runGcloudListCommand(resource string) ([]string, error) {
