@@ -530,33 +530,6 @@ func searchLogsCore(h *handlers, ctx context.Context, projectID string, filter s
 	return "Found Xid Errors", searchResults, true
 }
 
-/*
-func getGceInstanceIdFromInstanceName(instName string, projectId string, zone string) (string, bool) {
-	ctx := context.Background()
-	client, err := compute.NewInstancesRESTClient(ctx)
-	defer client.Close()
-	if err != nil {
-		genericCore.WriteToLog("Could not find instance id for " + instName + fmt.Sprintf("%v", err))
-		return "Could not find instance id for " + instName, false
-	}
-
-	req := &computepb.GetInstanceRequest{
-		Project:  projectId,
-		Zone:     zone,
-		Instance: instName,
-	}
-
-	instance, err := client.Get(ctx, req)
-	if err != nil {
-		genericCore.WriteToLog("Could not find instance id for " + instName + fmt.Sprintf("%v", err))
-		return "Could not find instance id for " + instName, false
-	}
-
-	// .GetId() returns the uint64 numeric ID
-	return instance.GetId(), true
-}
-*/
-
 func getGceInstanceForPod(podName string) string {
 	// hard coded fix later
 	namespace := "default"
@@ -653,27 +626,6 @@ func slurpFile(fileName string) (string, error) {
 	}
 	return string(content), err
 }
-
-// // gcloudListItem represents a single item from the gcloud list command's JSON output.
-// type gcloudListItem struct {
-// 	Name string `json:"name"`
-// }
-
-// // getGCloudRegionsAndZones fetches all available GCP regions and zones using the gcloud CLI.
-// // It returns a list of region names, a list of zone names, and an error if one occurred.
-// func getGCloudRegionsAndZones() ([]string, []string, error) {
-// 	regions, err := runGcloudListCommand("regions")
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("Could not get regions: %w", err)
-// 	}
-
-// 	zones, err := runGcloudListCommand("zones")
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("Could not get zones : %w", err)
-// 	}
-
-// 	return regions, zones, nil
-// }
 
 // Executes a 'gcloud compute <resource> list' command and returns the names.
 func runGcloudListCommand(resource string) ([]string, error) {

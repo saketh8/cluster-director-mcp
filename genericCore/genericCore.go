@@ -315,10 +315,10 @@ func QueryURLAndGetResult(authToken string, url string) (string, bool) {
 func StringMatchesAnySubstring(s string, substrings []string) bool {
 	for _, sub := range substrings {
 		if strings.Contains(s, sub) {
-			return true // Found a match
+			return true 
 		}
 	}
-	return false // No matches found
+	return false 
 }
 
 // contains checks if an integer is present in a slice.
