@@ -17,7 +17,6 @@ package cluster
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +31,7 @@ import (
 
 	"cloud.google.com/go/logging"
 	"cloud.google.com/go/logging/logadmin"
+	"golang.org/x/oauth2/google"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -675,23 +675,16 @@ func getGCloudRegionsAndZones() ([]string, []string, error) {
 
 // Executes a 'gcloud compute <resource> list' command and returns the names.
 func runGcloudListCommand(resource string) ([]string, error) {
-	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
+	ctx := context.Background()
+	// Retrieve project ID natively from the environment/ADC
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	if projectID == "" {
+		// Fallback to finding it natively if env is not set
+		credentials, _ := google.FindDefaultCredentials(ctx)
+		projectID = credentials.ProjectID
 	}
 
-	var items []gcloudListItem
-	if err := json.Unmarshal(output, &items); err != nil {
-		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
-	}
-
-	names := make([]string, len(items))
-	for i, item := range items {
-		names[i] = item.Name
-	}
-
-	return names, nil
+	return genericCore.RunGcloudListCommand(ctx, projectID, resource)
 }
 
 func filterString(rawSSHOut string, substringsToRemove []string) string {

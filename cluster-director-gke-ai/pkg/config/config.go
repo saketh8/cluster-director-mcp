@@ -15,11 +15,14 @@
 package config
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
 
 	"cluster-director-mcp/genericCore"
+
+	"golang.org/x/oauth2/google"
 )
 
 type Config struct {
@@ -65,12 +68,22 @@ func New(version string) *Config {
 }
 
 func getDefaultProjectID() string {
-	out, err := exec.Command("gcloud", "config", "get", "core/project").Output()
+
+	if envProject := os.Getenv("GOOGLE_CLOUD_PROJECT"); envProject != "" {
+		genericCore.WriteToLog(fmt.Sprintf("Using project ID from GOOGLE_CLOUD_PROJECT: %s", envProject))
+		return envProject
+	}
+	ctx := context.Background()
+	credentials, err := google.FindDefaultCredentials(ctx)
 	if err != nil {
-		genericCore.WriteToLog(fmt.Sprintf("Failed to get default project: %v", err))
+		genericCore.WriteToLog(fmt.Sprintf("Failed to find default credentials: %v", err))
 		return ""
 	}
-	projectID := strings.TrimSpace(string(out))
-	genericCore.WriteToLog(fmt.Sprintf("Using default project ID: %s", projectID))
+	if credentials.ProjectID == "" {
+		genericCore.WriteToLog("No project ID found in native credentials. Ensure 'gcloud config set project' has been run or GOOGLE_CLOUD_PROJECT is set.")
+		return ""
+	}
+	projectID := strings.TrimSpace(credentials.ProjectID)
+	genericCore.WriteToLog(fmt.Sprintf("Natively detected project ID: %s", projectID))
 	return projectID
 }

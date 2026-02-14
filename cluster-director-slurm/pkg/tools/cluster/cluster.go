@@ -17,7 +17,6 @@ package cluster
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,6 +28,8 @@ import (
 	"cluster-director-mcp/cluster-director-slurm/pkg/config"
 	"cluster-director-mcp/genericCore"
 	"cluster-director-mcp/persistence"
+
+	"google.golang.org/api/compute/v1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -572,29 +573,31 @@ func (h *handlers) getClusterMCP(ctx context.Context, request *GetClusterRequest
 }
 
 func (h *handlers) checkMaintenanceEventsCore(projectID string, zone string, clusterName string) (string, error) {
-	genericCore.WriteToLog("-------------------checkMaintenanceEventsCore()-------------------")
+	genericCore.WriteToLog("-------------------checkMaintenanceEventsCore (Native API)-------------------")
 
 	nodeList, success := getComputeNodesInCluster(clusterName+"-login-001", zone, projectID)
 	if !success {
 		return fmt.Sprintf("Could not get nodes in cluster %s in project %s", clusterName, projectID), nil
 	}
-
+	service, err := compute.NewService(context.Background())
+	if err != nil {
+		return "", fmt.Errorf("failed to create compute service: %w", err)
+	}
 	returnStr := ""
 	for _, node := range nodeList {
-		cmd := exec.Command("/usr/bin/gcloud", "compute", "instances", "describe", node, "--zone="+zone)
-		output, err := cmd.Output()
+		instance, err := service.Instances.Get(projectID, zone, node).Do()
 		returnStr += "Maintenance info for node " + node + " : "
 		if err != nil {
-			returnStr += fmt.Sprintf("Could not get maintenance info for node %s : %w", node, err)
-		} else if strings.Contains(string(output), "maintenanceStatus") {
-			scanner := bufio.NewScanner(strings.NewReader(string(output)))
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line == "upcomingMaintenance:" {
-					for i := 0; i < 5 && scanner.Scan(); i++ {
-						returnStr += scanner.Text() + "\n"
-					}
-				}
+			returnStr += fmt.Sprintf("Error fetching node info: %v\n", err)
+			continue
+		}
+		if instance.Scheduling != nil && instance.Scheduling.OnHostMaintenance != "" {
+			returnStr += fmt.Sprintf("Policy: %s", instance.Scheduling.OnHostMaintenance)
+			// Check for specific upcoming maintenance events
+			if len(instance.ResourceStatus.UpcomingMaintenance.Type) > 0 {
+				returnStr += fmt.Sprintf(" | Upcoming: %s", instance.ResourceStatus.UpcomingMaintenance.Type)
+			} else {
+				returnStr += " | No upcoming events\n"
 			}
 		} else {
 			returnStr += " No events \n"
@@ -1441,25 +1444,11 @@ func getGCloudRegionsAndZones() ([]string, []string, error) {
 	return regions, zones, nil
 }
 
-// Executes a 'gcloud compute <resource> list' command and returns the names.
 func runGcloudListCommand(resource string) ([]string, error) {
-	cmd := exec.Command("gcloud", "compute", resource, "list", "--format=json")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gcloud command for %s failed: %w", resource, err)
-	}
+	ctx := context.Background()
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 
-	var items []gcloudListItem
-	if err := json.Unmarshal(output, &items); err != nil {
-		return nil, fmt.Errorf("failed to parse gcloud output for %s: %w", resource, err)
-	}
-
-	names := make([]string, len(items))
-	for i, item := range items {
-		names[i] = item.Name
-	}
-
-	return names, nil
+	return genericCore.RunGcloudListCommand(ctx, projectID, resource)
 }
 
 func filterString(rawSSHOut string, substringsToRemove []string) string {
