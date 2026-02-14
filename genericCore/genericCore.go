@@ -17,6 +17,7 @@ package genericCore
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
